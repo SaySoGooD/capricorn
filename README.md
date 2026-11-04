@@ -295,3 +295,32 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
   <sub>Некоммерческий фан-проект. Персонаж Капри и вселенная Cyberpunk: Edgerunners принадлежат их правообладателям.<br>
   Модель распознавания речи в папке <code>bundled</code> — <a href="https://alphacephei.com/vosk/models">Vosk vosk-model-small-ru-0.22</a> от Alpha Cephei, лицензия Apache 2.0.</sub>
 </p>
+
+---
+
+## Устройство кода (чистая архитектура)
+
+Код разложен по слоям, как в Clean Architecture Роберта Мартина: внутренние слои не знают о внешних.
+
+```
+src/
+├── application/assistant/      # логика Капри — без Windows, Qt и сети
+│   ├── dto/                    # данные между слоями (ReplyDTO, AppCandidateDTO, …)
+│   ├── interfaces/             # порты: I…Adapter / I…Store / I…UseCase
+│   ├── usecases/               # сценарии: разбор команд, сессия ассистента, группы команд
+│   └── *.py                    # чистые правила: разбор речи, клавиш, времени, характер Капри
+├── adapter/                    # реализации портов
+│   ├── windows/  speech/  tts/ # WinAPI, pycaw, UI Automation, Vosk, Edge TTS
+│   ├── llm/  web/  zapret/     # Claude, Ollama, YouTube, Википедия, zapret
+│   ├── file/                   # config.json
+│   └── qt/                     # аватар, трей, окна настроек
+└── main/
+    ├── config.py               # пути и журнал (pydantic-settings, можно переопределить в .env)
+    ├── dependency_injection.py # контейнер dependency-injector: какой адаптер за каким портом
+    ├── logging_setup.py
+    └── app.py                  # запуск
+```
+
+Правило зависимостей: `application` не импортирует `adapter` и `main`, а `adapter` не импортирует `main`.
+Чтобы, например, заменить голос, нужен новый адаптер с интерфейсом `ISpeakerAdapter`
+и одна строка в `dependency_injection.py`.

@@ -13,3 +13,6 @@ samples/
 __pycache__/
 *.pyc
 *.tmp
+
+# переопределение путей и уровня журнала (src/main/config.py)
+.env
