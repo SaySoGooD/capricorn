@@ -1,7 +1,7 @@
 """Настройки по умолчанию. config.json дополняет и переопределяет их."""
+from typing import Any
 
-
-DEFAULTS = {
+DEFAULTS: dict[str, Any] = {
     "enable_ai": False,
     "local_ai": True,
     "local_model": "qwen3:8b",

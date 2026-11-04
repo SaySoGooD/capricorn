@@ -86,7 +86,7 @@ class RunChainUseCase(IRunChainUseCase):
                     if not self._messenger.open_chat(name=q.group("q")):
                         return fail()
                 else:
-                    if not self._window.wait_and_focus(context, timeout=6):
+                    if not context or not self._window.wait_and_focus(context, timeout=6):
                         return fail()
                     self._youtube.search_in_tab(q.group("q"))
                     said.append(line("yt", q=q.group("q")))

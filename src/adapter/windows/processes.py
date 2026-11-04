@@ -1,7 +1,7 @@
 """Описание exe-файла из его ресурсов (как в диспетчере задач)."""
 import ctypes
 
-_desc_cache = {}
+_desc_cache: dict[str, str] = {}
 
 
 def file_description(path):

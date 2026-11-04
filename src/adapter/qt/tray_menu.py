@@ -1,6 +1,7 @@
 """Значок Капри в трее и его меню (то же меню открывается правым кликом по Капри)."""
 import logging
 import os
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
@@ -61,7 +62,7 @@ class TrayMenu:
         self._remember = remember
         self._open_url = open_url
         self._settings_path = settings_path
-        self._windows = {}  # открытые окна держим, пока открыты (иначе их соберёт сборщик мусора)
+        self._windows: dict[str, Any] = {}  # открытые окна держим, пока открыты (иначе их соберёт сборщик мусора)
         self.menu = QMenu()
         self.tray = QSystemTrayIcon(tray_icon())
 

@@ -160,7 +160,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
 
     def _chatter_line(self) -> str:
         hour = time.localtime().tm_hour
-        text = None
+        text: str | None = None
         if 0 <= hour < 5 and random.random() < 0.5:
             text = line("chatter_night")
         elif 6 <= hour < 11 and random.random() < 0.3:
@@ -171,6 +171,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             if text and text not in self._recent_chatter:
                 break
             text = line("chatter")
+        text = text or line("chatter")
         self._recent_chatter = (self._recent_chatter + [text])[-6:]
         return text
 
@@ -444,7 +445,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             reply = self._mic_command(reply.action)
         if reply is None:
             if self._settings.get("enable_ai") and self._cloud.available:
-                reply = ReplyDTO(self._cloud.ask(cmd), "answer")
+                reply = ReplyDTO(self._cloud.ask(cmd) or line("dont_know"), "answer")
             else:
                 answer = self._local.ask(cmd) if self._local else None
                 reply = ReplyDTO(answer, "answer") if answer else self._handle.fallback(
@@ -489,7 +490,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         finally:
             self._speaking = False
             self._speech_end = time.time()
-            if barge_in and not self._interrupted:
+            if barge_in and listener and not self._interrupted:
                 listener.reset_recognition()  # выбрасываем эхо её голоса
             if listener and not barge_in:
                 time.sleep(0.25)

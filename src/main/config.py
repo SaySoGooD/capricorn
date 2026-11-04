@@ -3,14 +3,14 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 
 class Config(BaseSettings):
     """Пути и параметры запуска. Переопределяются переменными окружения или файлом .env в папке Капри.
     Пользовательские настройки (сайты, голос, микрофон…) — в config.json, см. JsonSettingsStore."""
 
-    BASE_DIR: str = str(BASE_DIR)
+    BASE_DIR: str = str(PROJECT_DIR)
     SETTINGS_FILE: str = "config.json"
     ASSETS_DIR: str = "assets"
     REPORTS_DIR: str = "reports"
@@ -20,7 +20,7 @@ class Config(BaseSettings):
     LOG_FILE: str = "capri.log"
 
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=PROJECT_DIR / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )

@@ -111,6 +111,7 @@ class MediaCommandsUseCase(IMediaCommandsUseCase):
                     yt.ensure_playing_async(5.0)
                     return ReplyDTO(line("media_seek", t=fmt(secs)))
                 return ReplyDTO(line("media_seek_fail"))
+            assert delta is not None  # не absolute — значит, перемотка на смещение
             n10, rest = divmod(int(abs(delta)), 10)
             keys = [["l" if delta > 0 else "j"]] * n10 + [["right" if delta > 0 else "left"]] * round(rest / 5)
             if yt.press_player_keys(keys or [["right" if delta > 0 else "left"]]):

@@ -16,3 +16,5 @@ __pycache__/
 
 # переопределение путей и уровня журнала (src/main/config.py)
 .env
+.mypy_cache/
+.ruff_cache/
