@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.application.assistant.dto.reply_dto import ReplyDTO
-from src.application.assistant.text import norm
+from src.application.assistant.text import Text
 
 
 @dataclass
@@ -27,10 +27,10 @@ class CommandContext:
 
     def set_lists(self, settings: dict[str, Any]) -> None:
         """Сайты, программы, названия и свои ответы из настроек — при запуске и когда config.json поменяли."""
-        self.sites = {norm(k): v for k, v in settings.get("sites", {}).items()}
-        self.apps = {norm(k): v for k, v in settings.get("apps", {}).items()}
-        self.aliases = {norm(k): v for k, v in settings.get("app_aliases", {}).items()}
-        self.replies = {norm(k): v for k, v in settings.get("replies", {}).items() if v}
+        self.sites = {Text.norm(k): v for k, v in settings.get("sites", {}).items()}
+        self.apps = {Text.norm(k): v for k, v in settings.get("apps", {}).items()}
+        self.aliases = {Text.norm(k): v for k, v in settings.get("app_aliases", {}).items()}
+        self.replies = {Text.norm(k): v for k, v in settings.get("replies", {}).items() if v}
 
     def book(self, section: str) -> dict[str, str]:
         return {"sites": self.sites, "apps": self.apps, "replies": self.replies}[section]

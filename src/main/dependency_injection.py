@@ -3,9 +3,12 @@ from typing import Any
 from dependency_injector import containers, providers
 from PySide6.QtWidgets import QApplication
 
+from src.adapter.code.code_rag_adapter import CodeRagAdapter
 from src.adapter.file.json_settings_store import JsonSettingsStore
+from src.adapter.image.comfyui_adapter import ComfyUiAdapter
 from src.adapter.llm.claude_chat_model_adapter import ClaudeChatModelAdapter
-from src.adapter.llm.ollama_chat_model_adapter import OllamaChatModelAdapter
+from src.adapter.llm.fastembed_adapter import FastEmbedAdapter
+from src.adapter.llm.llama_cpp_chat_model import LlamaCppChatModelAdapter
 from src.adapter.qt.avatar_widget import Avatar
 from src.adapter.qt.qt_avatar_view import QtAvatarView
 from src.adapter.qt.tray_menu import TrayMenu
@@ -14,6 +17,7 @@ from src.adapter.speech.sounddevice_audio_devices_adapter import SoundDeviceAudi
 from src.adapter.speech.vosk_listener_adapter import VoskListenerFactory
 from src.adapter.tts.edge_speaker_adapter import EdgeSpeakerAdapter
 from src.adapter.tts.glitch_sound_adapter import GlitchSoundAdapter
+from src.adapter.web.cdp_browser_adapter import CdpBrowserAdapter
 from src.adapter.web.wikipedia_adapter import WikipediaAdapter
 from src.adapter.web.youtube_search_adapter import YouTubeSearchAdapter
 from src.adapter.windows.com_thread_setup_adapter import ComThreadSetupAdapter
@@ -29,9 +33,9 @@ from src.adapter.windows.windows_media_session_adapter import WindowsMediaSessio
 from src.adapter.windows.windows_power_adapter import WindowsPowerAdapter
 from src.adapter.windows.windows_process_adapter import WindowsProcessAdapter
 from src.adapter.windows.windows_screenshot_adapter import WindowsScreenshotAdapter
+from src.adapter.windows.windows_ui_automation_adapter import WindowsUiAutomationAdapter
 from src.adapter.windows.windows_window_adapter import WindowsWindowAdapter
 from src.adapter.windows.windows_youtube_player_adapter import WindowsYouTubePlayerAdapter
-from src.adapter.zapret.zapret_adapter import ZapretAdapter
 from src.application.assistant.command_context import CommandContext
 from src.application.assistant.dto.settings_dto import SettingsLoadResultDTO
 from src.application.assistant.interfaces.i_app_catalog_adapter import IAppCatalogAdapter
@@ -41,12 +45,18 @@ from src.application.assistant.interfaces.i_audio_devices_adapter import IAudioD
 from src.application.assistant.interfaces.i_avatar_commands_usecase import IAvatarCommandsUseCase
 from src.application.assistant.interfaces.i_avatar_view import IAvatarView
 from src.application.assistant.interfaces.i_browser_adapter import IBrowserAdapter
+from src.application.assistant.interfaces.i_browser_automation_adapter import IBrowserAutomationAdapter
+from src.application.assistant.interfaces.i_browser_automation_usecase import IBrowserAutomationUseCase
 from src.application.assistant.interfaces.i_chat_model_adapter import IChatModelAdapter
+from src.application.assistant.interfaces.i_code_rag_adapter import ICodeRagAdapter
 from src.application.assistant.interfaces.i_diagnostics_adapter import IDiagnosticsAdapter
 from src.application.assistant.interfaces.i_display_adapter import IDisplayAdapter
+from src.application.assistant.interfaces.i_embedding_adapter import IEmbeddingAdapter
 from src.application.assistant.interfaces.i_encyclopedia_adapter import IEncyclopediaAdapter
 from src.application.assistant.interfaces.i_file_system_adapter import IFileSystemAdapter
 from src.application.assistant.interfaces.i_handle_command_usecase import IHandleCommandUseCase
+from src.application.assistant.interfaces.i_image_generation_adapter import IImageGenerationAdapter
+from src.application.assistant.interfaces.i_image_generation_usecase import IImageGenerationUseCase
 from src.application.assistant.interfaces.i_input_commands_usecase import IInputCommandsUseCase
 from src.application.assistant.interfaces.i_keyboard_adapter import IKeyboardAdapter
 from src.application.assistant.interfaces.i_listener_factory import IListenerFactory
@@ -62,6 +72,7 @@ from src.application.assistant.interfaces.i_process_adapter import IProcessAdapt
 from src.application.assistant.interfaces.i_remember_entry_usecase import IRememberEntryUseCase
 from src.application.assistant.interfaces.i_run_chain_usecase import IRunChainUseCase
 from src.application.assistant.interfaces.i_screenshot_adapter import IScreenshotAdapter
+from src.application.assistant.interfaces.i_self_knowledge_usecase import ISelfKnowledgeUseCase
 from src.application.assistant.interfaces.i_settings_store import ISettingsStore
 from src.application.assistant.interfaces.i_sound_effects_adapter import ISoundEffectsAdapter
 from src.application.assistant.interfaces.i_speaker_adapter import ISpeakerAdapter
@@ -69,15 +80,17 @@ from src.application.assistant.interfaces.i_speech_refiner_adapter import ISpeec
 from src.application.assistant.interfaces.i_system_audio_adapter import ISystemAudioAdapter
 from src.application.assistant.interfaces.i_system_commands_usecase import ISystemCommandsUseCase
 from src.application.assistant.interfaces.i_thread_setup_adapter import IThreadSetupAdapter
+from src.application.assistant.interfaces.i_ui_automation_adapter import IUiAutomationAdapter
 from src.application.assistant.interfaces.i_web_commands_usecase import IWebCommandsUseCase
 from src.application.assistant.interfaces.i_window_adapter import IWindowAdapter
 from src.application.assistant.interfaces.i_youtube_player_adapter import IYouTubePlayerAdapter
 from src.application.assistant.interfaces.i_youtube_search_adapter import IYouTubeSearchAdapter
-from src.application.assistant.interfaces.i_zapret_adapter import IZapretAdapter
 from src.application.assistant.usecases.app_commands_usecase import AppCommandsUseCase
 from src.application.assistant.usecases.assistant_session_usecase import AssistantSessionUseCase
 from src.application.assistant.usecases.avatar_commands_usecase import AvatarCommandsUseCase
+from src.application.assistant.usecases.browser_automation_usecase import BrowserAutomationUseCase
 from src.application.assistant.usecases.handle_command_usecase import HandleCommandUseCase
+from src.application.assistant.usecases.image_generation_usecase import ImageGenerationUseCase
 from src.application.assistant.usecases.input_commands_usecase import InputCommandsUseCase
 from src.application.assistant.usecases.media_commands_usecase import MediaCommandsUseCase
 from src.application.assistant.usecases.memory_commands_usecase import MemoryCommandsUseCase
@@ -85,6 +98,7 @@ from src.application.assistant.usecases.messenger_commands_usecase import Messen
 from src.application.assistant.usecases.open_url_usecase import OpenUrlUseCase
 from src.application.assistant.usecases.remember_entry_usecase import RememberEntryUseCase
 from src.application.assistant.usecases.run_chain_usecase import RunChainUseCase
+from src.application.assistant.usecases.self_knowledge_usecase import SelfKnowledgeUseCase
 from src.application.assistant.usecases.system_commands_usecase import SystemCommandsUseCase
 from src.application.assistant.usecases.web_commands_usecase import WebCommandsUseCase
 from src.main.config import Config
@@ -95,8 +109,8 @@ def _load_settings(store: ISettingsStore) -> SettingsLoadResultDTO:
 
 
 def _local_chat_model(settings: dict[str, Any]) -> ILocalChatModelAdapter | None:
-    """Локальная нейросеть включается настройкой local_ai."""
-    return OllamaChatModelAdapter(settings) if settings.get("local_ai") else None
+    """Локальная нейросеть (llama.cpp на 127.0.0.1:8085) включается настройкой local_ai."""
+    return LlamaCppChatModelAdapter(settings) if settings.get("local_ai") else None
 
 
 def _avatar(assets_dir: str, settings: dict[str, Any]) -> Avatar:
@@ -148,8 +162,18 @@ class Container(containers.DeclarativeContainer):
         folder=config.provided.SCREENSHOTS_DIR,
     )
     messenger_adapter: providers.Singleton[IMessengerAdapter] = providers.Singleton(TelegramMessengerAdapter)
-    zapret_adapter: providers.Singleton[IZapretAdapter] = providers.Singleton(ZapretAdapter)
+    browser_automation_adapter: providers.Singleton[IBrowserAutomationAdapter] = providers.Singleton(
+        CdpBrowserAdapter,
+        settings=settings,
+        base_dir=config.provided.BASE_DIR,
+    )
     thread_setup_adapter: providers.Singleton[IThreadSetupAdapter] = providers.Singleton(ComThreadSetupAdapter)
+    ui_automation_adapter: providers.Singleton[IUiAutomationAdapter] = providers.Singleton(WindowsUiAutomationAdapter)
+    image_generation_adapter: providers.Singleton[IImageGenerationAdapter] = providers.Singleton(
+        ComfyUiAdapter,
+        settings=settings,
+        folder=config.provided.SCREENSHOTS_DIR,
+    )
 
     # ----- интернет -----
     youtube_search_adapter: providers.Singleton[IYouTubeSearchAdapter] = providers.Singleton(YouTubeSearchAdapter)
@@ -178,6 +202,17 @@ class Container(containers.DeclarativeContainer):
     )
     local_chat_adapter: providers.Singleton[ILocalChatModelAdapter | None] = providers.Singleton(
         _local_chat_model,
+        settings=settings,
+    )
+    # ----- RAG по собственному коду (эмбеддинги на CPU, чтобы не трогать VRAM) -----
+    embedding_adapter: providers.Singleton[IEmbeddingAdapter] = providers.Singleton(
+        FastEmbedAdapter,
+        settings=settings,
+    )
+    code_rag_adapter: providers.Singleton[ICodeRagAdapter] = providers.Singleton(
+        CodeRagAdapter,
+        embedding=embedding_adapter,
+        base_dir=config.provided.BASE_DIR,
         settings=settings,
     )
 
@@ -220,6 +255,8 @@ class Container(containers.DeclarativeContainer):
         keyboard=keyboard_adapter,
         window=window_adapter,
         youtube=youtube_player_adapter,
+        browser=browser_adapter,
+        ui_automation=ui_automation_adapter,
     )
     media_commands_usecase: providers.Factory[IMediaCommandsUseCase] = providers.Factory(
         MediaCommandsUseCase,
@@ -250,6 +287,25 @@ class Container(containers.DeclarativeContainer):
         youtube=youtube_player_adapter,
         encyclopedia=encyclopedia_adapter,
     )
+    image_generation_usecase: providers.Factory[IImageGenerationUseCase] = providers.Factory(
+        ImageGenerationUseCase,
+        context=command_context,
+        image=image_generation_adapter,
+        file_system=file_system_adapter,
+        local_chat=local_chat_adapter,
+    )
+    browser_automation_usecase: providers.Factory[IBrowserAutomationUseCase] = providers.Factory(
+        BrowserAutomationUseCase,
+        context=command_context,
+        browser=browser_automation_adapter,
+        local_chat=local_chat_adapter,
+    )
+    self_knowledge_usecase: providers.Factory[ISelfKnowledgeUseCase] = providers.Factory(
+        SelfKnowledgeUseCase,
+        context=command_context,
+        rag=code_rag_adapter,
+        local_chat=local_chat_adapter,
+    )
     run_chain_usecase: providers.Factory[IRunChainUseCase] = providers.Factory(
         RunChainUseCase,
         context=command_context,
@@ -272,6 +328,9 @@ class Container(containers.DeclarativeContainer):
         messenger=messenger_commands_usecase,
         apps=app_commands_usecase,
         web=web_commands_usecase,
+        image=image_generation_usecase,
+        self_knowledge=self_knowledge_usecase,
+        browser_auto=browser_automation_usecase,
     )
 
     # ----- интерфейс (Qt): QApplication создаётся в main и подставляется через override -----
@@ -304,9 +363,9 @@ class Container(containers.DeclarativeContainer):
         sound_effects=sound_effects_adapter,
         view=avatar_view,
         window=window_adapter,
-        zapret=zapret_adapter,
         catalog=app_catalog_adapter,
         thread_setup=thread_setup_adapter,
+        self_knowledge=self_knowledge_usecase,
     )
     tray_menu: providers.Singleton[TrayMenu] = providers.Singleton(
         TrayMenu,

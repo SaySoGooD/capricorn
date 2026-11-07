@@ -29,6 +29,16 @@ class IInputCommandsUseCase(ABC):
         ...
 
     @abstractmethod
+    def switch_tab(self, c: str, m: re.Match) -> ReplyDTO | None:
+        """«перейди на вторую вкладку» — переключиться на вкладку по номеру."""
+        ...
+
+    @abstractmethod
+    def click(self, c: str, m: re.Match) -> ReplyDTO:
+        """«нажми на кнопку …» / «кликни по …» — клик по элементу окна по названию."""
+        ...
+
+    @abstractmethod
     def minimize_all(self, c: str, m: re.Match) -> ReplyDTO:
         ...
 

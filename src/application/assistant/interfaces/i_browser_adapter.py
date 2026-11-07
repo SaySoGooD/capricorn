@@ -16,3 +16,8 @@ class IBrowserAdapter(ABC):
     def foreground_page_url(self) -> str | None:
         """Адрес вкладки в активном окне браузера (для «запомни этот сайт»)."""
         ...
+
+    @abstractmethod
+    def switch_tab(self, n: int) -> None:
+        """Перейти на вкладку по номеру (1..8; 9 и больше — последняя)."""
+        ...

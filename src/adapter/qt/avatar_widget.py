@@ -61,6 +61,7 @@ STATUS_TEXT = {
     "listening": "СЛУШАЮ",
     "thinking": "ОБРАБОТКА",
     "speaking": "ПЕРЕДАЧА",
+    "boot": "ЗАГРУЗКА",
 }
 
 
@@ -189,6 +190,7 @@ def load_custom(path, w, h):
 ANIM_FPS = 24
 TELE_OUT_FRAMES = 5      # сколько кадров Капри «сжимается» перед телепортом
 BOLT_MS = 380            # сколько живёт молния
+BOOT_FLASH_MS = 1900     # сколько длится полноэкранная заставка запуска
 
 
 def bolt_path(a, b, rnd, detail=5, spread=0.24):
@@ -392,6 +394,169 @@ class LightningOverlay(QWidget):
         p.end()
 
 
+class BootFlash(QWidget):
+    """Полноэкранная заставка запуска Капри: ЭЛТ-включение, глитч-полосы, молнии от краёв к центру,
+    её знак (осколки-крылья + ромб с глазом) и надпись «CAPRI // СИСТЕМА АКТИВНА». Сквозь окно проходят
+    клики, живёт ~2 с и само пропадает. on_done — что вызвать в конце (появление Капри)."""
+
+    SIG = 460  # размер знака в центре (для запасной процедурной заглушки)
+    # где искать арт Капри для центра заставки (первый найденный); можно положить свой capri_boot.png
+    BOOT_IMAGES = ("capri_boot.png", "poses/capri.png", "capri.png", "poses/каприии.png")
+
+    def __init__(self, assets_dir=""):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._assets = assets_dir
+        self.start = 0.0
+        self.bolts = []           # (точки, толщина, доля времени до появления)
+        self.bars = []            # глитч-полосы (y, высота, цвет, прозрачность)
+        self.sigil = None
+        self._sigil_h = 0         # на какую высоту собрана картинка (пересобираем при смене экрана)
+        self.on_done = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+
+    def _build_sigil(self, target_h: int):
+        """Центр заставки — реальный арт Капри из assets; если файла нет, запасной процедурный знак."""
+        for cand in self.BOOT_IMAGES:
+            path = os.path.join(self._assets, *cand.split("/")) if self._assets else ""
+            if path and os.path.isfile(path):
+                img = QImage(path)
+                if not img.isNull():
+                    return img.scaledToHeight(max(100, int(target_h)), Qt.TransformationMode.SmoothTransformation)
+        img, (cx, cy) = build_procedural(self.SIG, self.SIG)
+        p = QPainter(img)
+        p.setRenderHint(AA)
+        draw_eye(p, cx, cy, 1.0, 1.0, 1.6)
+        p.end()
+        return img
+
+    def play(self):
+        self.setGeometry(QGuiApplication.primaryScreen().geometry())
+        target_h = int(self.height() * 0.58)
+        if self.sigil is None or self._sigil_h != target_h:
+            self.sigil = self._build_sigil(target_h)
+            self._sigil_h = target_h
+        self.start = time.time()
+        self._regen()
+        self.show()
+        self.raise_()
+        self.timer.start(16)
+
+    def _regen(self):
+        w, h = self.width(), self.height()
+        rnd = random.Random()
+        c = QPointF(w / 2, h * 0.46)
+        self.bolts = []
+        for _ in range(rnd.randint(5, 8)):
+            side = rnd.randint(0, 3)
+            a = [QPointF(rnd.uniform(0, w), 0), QPointF(w, rnd.uniform(0, h)),
+                 QPointF(rnd.uniform(0, w), h), QPointF(0, rnd.uniform(0, h))][side]
+            self.bolts.append((bolt_path(a, c, rnd, detail=5, spread=0.22),
+                               rnd.uniform(7, 13), rnd.uniform(0, 0.22)))
+        self.bars = [(rnd.uniform(0, h), rnd.randint(6, 46),
+                      rnd.choice([PINK, CYAN, GREEN, PURPLE, WHITE]), rnd.uniform(0.2, 0.9))
+                     for _ in range(rnd.randint(10, 18))]
+
+    def _tick(self):
+        el = (time.time() - self.start) * 1000
+        if el > BOOT_FLASH_MS:
+            self.timer.stop()
+            self.hide()
+            if self.on_done:
+                self.on_done()
+            return
+        if random.random() < 0.5:  # мерцание формы разрядов и полос
+            self._regen()
+        self.update()
+
+    def paintEvent(self, _):
+        el = (time.time() - self.start) * 1000
+        t = el / BOOT_FLASH_MS
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h * 0.46
+        rnd = random.Random()
+        g = t / 0.12 if t < 0.12 else (1.0 if t < 0.72 else max(0.0, 1 - (t - 0.72) / 0.28))
+
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        p.fillRect(self.rect(), QColor(10, 6, 18, int(225 * g)))  # тёмная вуаль
+
+        if t < 0.12:  # ЭЛТ-включение: экран «раскрывается» из яркой линии
+            band = max(3.0, h * (t / 0.12))
+            p.fillRect(QRectF(0, cy - 2, w, 4), QColor(255, 255, 255, 230))
+            p.fillRect(QRectF(0, cy - band / 2, w, 2), QColor(255, 120, 170, 160))
+            p.fillRect(QRectF(0, cy + band / 2, w, 2), QColor(255, 120, 170, 160))
+
+        if 0.1 < t < 0.26:  # вспышка на «ударе»
+            p.fillRect(self.rect(), QColor(255, 255, 255, int(150 * (1 - (t - 0.1) / 0.16))))
+
+        shadow = QPointF(5, 4)  # молнии от краёв к центру
+        if t > 0.06:
+            p.setPen(Qt.PenStyle.NoPen)
+            for pts, width, delay in self.bolts:
+                if t < delay or t > 0.8:
+                    continue
+                poly = ribbon(pts, width, rnd, 0.4)
+                p.setBrush(PURPLE); p.drawPolygon(poly.translated(shadow))
+                p.setBrush(PINK); p.drawPolygon(poly)
+                p.setBrush(WHITE); p.drawPolygon(ribbon(pts, width * 0.3, rnd, 0.5))
+
+        if g > 0.15:  # глитч-полосы по всему экрану
+            p.setPen(Qt.PenStyle.NoPen)
+            for y, hgt, col, op in self.bars:
+                p.setOpacity(op * g)
+                p.fillRect(QRectF(rnd.randint(-120, 120), y, w, hgt), col)
+            p.setOpacity(1.0)
+
+        if t > 0.18:  # знак Капри в центре с RGB-сдвигом
+            sg = min(1.0, (t - 0.18) / 0.3) * (1.0 if t < 0.82 else max(0.0, 1 - (t - 0.82) / 0.18))
+            scale = (0.7 + 0.5 * sg) * (1 + 0.04 * math.sin(el * 0.02))
+            sz = self.sigil.deviceIndependentSize()
+            sw, sh = sz.width() * scale, sz.height() * scale
+            x, y = cx - sw / 2, cy - sh / 2
+            split = int(10 * g)
+            p.setOpacity(0.6 * sg)
+            p.drawImage(QRectF(x - split, y, sw, sh), tinted(self.sigil, QColor(255, 0, 60)))
+            p.drawImage(QRectF(x + split, y, sw, sh), tinted(self.sigil, CYAN))
+            p.setOpacity(sg)
+            p.drawImage(QRectF(x, y, sw, sh), self.sigil)
+            p.setOpacity(1.0)
+
+        if t > 0.3:  # надпись
+            tg = min(1.0, (t - 0.3) / 0.2)
+            big = QFont("Consolas", max(12, int(h * 0.09))); big.setBold(True)
+            p.setFont(big)
+            title = "C A P R I"
+            tw = QFontMetrics(big).horizontalAdvance(title)
+            ty = cy + h * 0.2
+            p.setOpacity(tg)
+            p.setPen(QColor(0, 240, 255, 160)); p.drawText(QPointF(cx - tw / 2 + 3, ty + 3), title)
+            p.setPen(PINK); p.drawText(QPointF(cx - tw / 2, ty), title)
+            sub = QFont("Consolas", max(8, int(h * 0.026))); sub.setBold(True)
+            p.setFont(sub)
+            s = "// СИСТЕМА АКТИВНА"
+            if g > 0.3:
+                chars = list(s)
+                for _ in range(int(len(chars) * g * 0.12) + 1):
+                    chars[rnd.randrange(len(chars))] = rnd.choice("▓░#@%&/\\")
+                s = "".join(chars)
+            sw2 = QFontMetrics(sub).horizontalAdvance(s)
+            p.setPen(GREEN); p.drawText(QPointF(cx - sw2 / 2, ty + h * 0.07), s)
+            p.setOpacity(1.0)
+
+        p.setCompositionMode(CM.CompositionMode_DestinationOut)  # строки развёртки
+        p.setPen(QPen(QColor(0, 0, 0, 70), 1))
+        for y in range(0, h, 3):
+            p.drawLine(0, y, w, y)
+        p.setPen(QPen(QColor(0, 0, 0, 110), 7))
+        p.drawLine(0, int((el * 0.6) % h), w, int((el * 0.6) % h))
+        p.setCompositionMode(CM.CompositionMode_SourceOver)
+        p.end()
+
+
 def load_anims(anim_dir):
     """assets/anim/<имя>/*.png → {имя: [кадры размером W×FIG_H]}. Кадры делает tools/convert_anim.py."""
     anims = {}
@@ -468,6 +633,7 @@ class Avatar(QWidget):
         self.home_pos = None
 
         self.overlay = LightningOverlay()
+        self.boot_flash = BootFlash(assets_dir)
         self.tele_target = None      # куда телепортируемся (QPoint), пока идёт «сжатие»
         self.tele_k = 0
         self.hopping = False         # прыгает по экрану, пока отвечает
@@ -481,6 +647,7 @@ class Avatar(QWidget):
         self.anim_loop = False
 
         self.frame = canvas(W, H)
+        self.booting = False         # экран загрузки: рисуем только плашку с «Инициализация… NN%», без фигуры
         self.state = "hidden"       # hidden / appearing / visible / vanishing
         self.mode = "idle"           # idle / listening / thinking / speaking
         self.mode_until = 0.0
@@ -626,7 +793,54 @@ class Avatar(QWidget):
         self.burst, self.burst_level = random.randint(5, 9), 1.0
         self.next_pose = time.time() + random.uniform(12, 30)
 
+    # ---------- экран загрузки ----------
+    def start_boot(self):
+        """Показать плашку загрузки (тот же HUD-стиль, без фигуры Капри) в углу экрана."""
+        geo = QGuiApplication.primaryScreen().availableGeometry()
+        self.move(geo.right() - W - 24, geo.bottom() - H)
+        self.booting = True
+        self.mode = "boot"
+        self.hide_at = 0
+        self.subtitle = self.subtitle or "Инициализация…"
+        self.show()
+        self.raise_()
+
+    def set_boot_text(self, text):
+        self.subtitle = text or ""
+
+    def end_boot(self):
+        """Загрузка окончена: плашку убираем, дальше обычное появление Капри (summon) с фигурой."""
+        self.booting = False
+        self.subtitle = ""
+        self.mode = "idle"
+        self.state = "hidden"
+        self.hide()
+
+    def launch_flash(self):
+        """Полноэкранная заставка «Капри запустилась». Сама Капри появляется посреди неё —
+        приветствием из сессии, поэтому on_done тут не нужен."""
+        self.boot_flash.play()
+
+    def render_boot(self):
+        f = self.frame
+        f.fill(Qt.GlobalColor.transparent)
+        p = QPainter(f)
+        p.setRenderHint(AA)
+        # арт Капри сверху (её картинка, чуть притушена), снизу — плашка «Инициализация… NN%»
+        p.setOpacity(0.92)
+        p.drawImage(0, 0, self._figure())
+        p.setOpacity(1.0)
+        p.setCompositionMode(CM.CompositionMode_DestinationOut)  # лёгкие строки развёртки по фигуре
+        p.setPen(QPen(QColor(0, 0, 0, 60), 1))
+        for y in range(0, FIG_H, 3):
+            p.drawLine(0, y, W, y)
+        p.setCompositionMode(CM.CompositionMode_SourceOver)
+        self._hud(p, 0.0)
+        p.end()
+
     def summon(self):
+        if self.booting:
+            return  # во время загрузки Капри не появляется — только плашка
         self.stop_roam()
         if self.state in ("visible", "appearing"):
             self.burst, self.burst_level = 6, 0.9
@@ -665,6 +879,11 @@ class Avatar(QWidget):
 
     # ---------- анимация ----------
     def tick(self):
+        if self.booting:
+            self.t += 1
+            self.render_boot()
+            self.update()
+            return
         self.t += 1
         self.k += 1
         now = time.time()

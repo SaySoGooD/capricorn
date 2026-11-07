@@ -3,7 +3,7 @@ import difflib
 import os
 import re
 
-from src.application.assistant.text import norm, translit
+from src.application.assistant.text import Text
 
 # ---------------- папки ----------------
 
@@ -42,7 +42,7 @@ def known_dir(key):
 
 def find_folder(name, search=False):
     """(путь, название) по сказанному имени папки или None. search=True — искать и среди своих папок."""
-    name = norm(name)
+    name = Text.norm(name)
     drive = re.fullmatch(r"(диск|раздел) (?P<l>\S+)", name)
     if drive:
         letter = DRIVE_LETTERS.get(drive.group("l"), drive.group("l").upper())
@@ -60,7 +60,7 @@ def find_folder(name, search=False):
 
 def search_folder(name, limit=40000):
     """Ищем папку по имени (с транслитом и нечётким сравнением) в домашних папках, до 4 уровней вглубь."""
-    targets = {name, translit(name)}
+    targets = {name, Text.translit(name)}
     roots = [known_dir(k) for k in ("desktop", "documents", "downloads", "pictures", "videos", "music")]
     roots.append(os.path.expanduser("~"))
     best, best_score, seen = None, 0.0, 0
@@ -73,7 +73,7 @@ def search_folder(name, limit=40000):
                 dirs[:] = []
             for d in dirs:
                 seen += 1
-                dn = norm(d)
+                dn = Text.norm(d)
                 for t in targets:
                     score = 1.0 if dn == t else (0.9 if t in dn.split() or dn.startswith(t)
                                                  else difflib.SequenceMatcher(None, t, dn).ratio())

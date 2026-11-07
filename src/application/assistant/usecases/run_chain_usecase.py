@@ -3,7 +3,7 @@ import re
 import time
 from collections.abc import Callable
 
-from src.application.assistant.command_chain import APP_WINDOWS, parse_type
+from src.application.assistant.command_chain import CommandChain
 from src.application.assistant.command_context import CommandContext
 from src.application.assistant.dto.reply_dto import ReplyDTO
 from src.application.assistant.interfaces.i_keyboard_adapter import IKeyboardAdapter
@@ -11,8 +11,8 @@ from src.application.assistant.interfaces.i_messenger_adapter import IMessengerA
 from src.application.assistant.interfaces.i_run_chain_usecase import IRunChainUseCase
 from src.application.assistant.interfaces.i_window_adapter import IWindowAdapter
 from src.application.assistant.interfaces.i_youtube_player_adapter import IYouTubePlayerAdapter
-from src.application.assistant.persona import line
-from src.application.assistant.text import norm
+from src.application.assistant.persona import persona
+from src.application.assistant.text import Text
 
 log = logging.getLogger("capri")
 
@@ -47,13 +47,14 @@ class RunChainUseCase(IRunChainUseCase):
         kind = None      # telegram / youtube / browser / None
         said: list[str] = []
         in_search = False  # курсор уже стоит в поле поиска
+        field_focused = False  # после клика по элементу курсор уже в нужном поле — печатаем туда, а не в поиск
 
         def fail() -> ReplyDTO:
-            return ReplyDTO(" ".join(said + [line("focus_fail")]))
+            return ReplyDTO(" ".join(said + [persona.line("focus_fail")]))
 
         for step in steps:
-            s = norm(step)
-            typed = parse_type(s)
+            s = Text.norm(step)
+            typed = CommandChain.parse_type(s)
             if typed:
                 text, send = typed
                 if context and not self._window.wait_and_focus(context, timeout=6):
@@ -61,9 +62,9 @@ class RunChainUseCase(IRunChainUseCase):
                     return fail()
                 if kind == "youtube":
                     self._youtube.search_in_tab(text)
-                    said.append(line("yt", q=text))
+                    said.append(persona.line("yt", q=text))
                     continue
-                if kind == "browser":
+                if kind == "browser" and not field_focused:
                     # на сайте «напиши X» = поиск X: сначала курсор в строку поиска, потом Enter
                     if not in_search:
                         self._window.focus_search(self._window.foreground_title())
@@ -71,14 +72,14 @@ class RunChainUseCase(IRunChainUseCase):
                     self._keyboard.input_text(text)
                     if send is not False:
                         self._enter()
-                    said.append(line("web", q=text))
+                    said.append(persona.line("web", q=text))
                     continue
                 if send is None:
                     send = self._context.settings.get("type_press_enter", True)
                 self._keyboard.input_text(text)
                 if send:
                     self._enter()
-                said.append(line("sent" if send else "typed", t=text))
+                said.append(persona.line("sent" if send else "typed", t=text))
                 continue
             q = re.match(r"^(найди|поищи)\s+(?P<q>.+)$", s)
             if q and kind in ("youtube", "telegram"):
@@ -89,7 +90,7 @@ class RunChainUseCase(IRunChainUseCase):
                     if not context or not self._window.wait_and_focus(context, timeout=6):
                         return fail()
                     self._youtube.search_in_tab(q.group("q"))
-                    said.append(line("yt", q=q.group("q")))
+                    said.append(persona.line("yt", q=q.group("q")))
                 continue
             if re.match(r"^(нажми на поиск|нажми поиск|поиск|в поиск|перейди в поиск)$", s):
                 if context and not self._window.wait_and_focus(context, timeout=6):
@@ -100,13 +101,16 @@ class RunChainUseCase(IRunChainUseCase):
                 continue
             r = handle_one(s)
             if r is None:
-                said.append(line("chain_skip", t=step))
+                said.append(persona.line("chain_skip", t=step))
                 continue
             if r.action in ("fail", "ask"):  # шаг не удался или нужно уточнить — дальше не идём
                 return ReplyDTO(" ".join(said + [r.text]))
+            if re.match(r"^(кликни|клик|клацни|ткни|нажми( на| по)? "
+                        r"(кнопк|кнопке|ссылк|ссылке|пункт|элемент|поле|галочк|чекбокс|переключател))", s):
+                field_focused = True  # кликнули по элементу — следующий «напиши X» уйдёт в него, не в поиск
             for w in s.split():
-                if w in APP_WINDOWS:
-                    context = APP_WINDOWS[w]
+                if w in CommandChain.APP_WINDOWS:
+                    context = CommandChain.APP_WINDOWS[w]
                     kind = KIND_OF_WORD.get(w, "browser" if w == "браузер" else None)
             if re.search(r"\b(чат|диалог|переписк)", s):
                 context, kind = ("telegram",), "telegram"
@@ -114,4 +118,4 @@ class RunChainUseCase(IRunChainUseCase):
                 self._window.wait_and_focus(context, timeout=10)
                 time.sleep(2.5 if kind in ("youtube", "browser") else 0.4)  # сайту нужно загрузиться
                 in_search = False
-        return ReplyDTO(" ".join(said) if said else line("done"))
+        return ReplyDTO(" ".join(said) if said else persona.line("done"))

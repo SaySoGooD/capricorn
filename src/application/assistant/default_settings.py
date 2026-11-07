@@ -5,6 +5,31 @@ DEFAULTS: dict[str, Any] = {
     "enable_ai": False,
     "local_ai": True,
     "local_model": "qwen3:8b",
+    "local_llm_dir": r"D:\ai-test\llm",  # папка стека LLM (Docker+прокси, скрипты start-chat-headless.ps1/stop-chat.ps1);
+                                         # "" — Капри не управляет сервером модели, он запускается отдельно
+    "pause_llm_on_draw": True, # на время рисования выгружать LLM из VRAM (35B и SDXL вместе не влезают в 16 ГБ)
+    "stop_ai_on_exit": True,   # при выходе из Капри гасить и ComfyUI, и локальную модель
+    "self_rag": True,          # Капри отвечает о себе по своему коду (RAG): «что у тебя под капотом», «как работает …»
+    "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",  # эмбеддинги (CPU/ONNX), качается один раз
+    "rag_top_k": 8,            # сколько кусков кода подкладывать модели для ответа о себе
+    "browser_cdp": True,       # свой браузер Капри по CDP: «запусти свой браузер», «открой … в своём браузере»
+    "browser_cdp_port": 9222,  # порт отладки её браузера (отдельный от твоего Chrome)
+    "browser_exe": "",         # путь к chrome.exe/msedge.exe; "" — ищется в стандартных местах
+    "browser_profile_dir": "", # профиль её браузера; "" — %LOCALAPPDATA%\Capri\browser (чистый, свой)
+    "image_ai": True,          # генерация картинок через локальный ComfyUI («нарисуй …»)
+    "comfyui_url": "http://127.0.0.1:8188",
+    "comfyui_dir": r"D:\ai-test\ComfyUI",  # папка ComfyUI — Капри сама поднимет/погасит его («запусти/выгрузи ComfyUI»);
+                                           # "" — не управлять, сервер запускается вручную
+    "comfyui_python": "",      # python ComfyUI; "" — берётся <comfyui_dir>\.venv\Scripts\python.exe
+    "comfyui_llm_tags": True,  # перед рисованием локальная модель подбирает booru-теги по описанию
+    "comfyui_model": "ponyDiffusionV6XL.safetensors",  # чекпойнт в ComfyUI/models/checkpoints
+    "comfyui_steps": 25,
+    "comfyui_cfg": 7.0,
+    "comfyui_size": 1024,      # SDXL рисует в 1024; для SD1.5 поставь 512
+    "comfyui_sampler": "euler",
+    "comfyui_scheduler": "normal",
+    "comfyui_prompt_prefix": "score_9, score_8_up, score_7_up, ",  # Pony любит score-теги; для иных моделей очисти
+    "comfyui_negative": "score_6, score_5, score_4, worst quality, low quality, blurry, watermark, text, signature",
     "barge_in": True,
     "mic_device": None,
     "chatter": True,

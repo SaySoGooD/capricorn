@@ -2,20 +2,24 @@
 import os
 from typing import Any
 
-from src.application.assistant.persona import set_user
+from src.application.assistant.persona import persona
 
 
-def user_display_name(settings: dict[str, Any]) -> str:
-    """"custom" — user_name, "windows" — имя пользователя Windows, "pc" — имя компьютера, "none" — не называть."""
-    mode = settings.get("user_name_mode", "none")
-    if mode == "custom":
-        return settings.get("user_name", "").strip()
-    if mode == "windows":
-        return os.environ.get("USERNAME", "")
-    if mode == "pc":
-        return os.environ.get("COMPUTERNAME", "")
-    return ""
+class UserProfile:
+    """Имя пользователя для обращения — из настроек. Без состояния; настраивает общий ``persona``."""
 
+    @staticmethod
+    def user_display_name(settings: dict[str, Any]) -> str:
+        """"custom" — user_name, "windows" — имя пользователя Windows, "pc" — имя компьютера, "none" — не называть."""
+        mode = settings.get("user_name_mode", "none")
+        if mode == "custom":
+            return settings.get("user_name", "").strip()
+        if mode == "windows":
+            return os.environ.get("USERNAME", "")
+        if mode == "pc":
+            return os.environ.get("COMPUTERNAME", "")
+        return ""
 
-def apply_user(settings: dict[str, Any]) -> None:
-    set_user(user_display_name(settings), settings.get("user_gender", "male"))
+    @staticmethod
+    def apply_user(settings: dict[str, Any]) -> None:
+        persona.set_user(UserProfile.user_display_name(settings), settings.get("user_gender", "male"))

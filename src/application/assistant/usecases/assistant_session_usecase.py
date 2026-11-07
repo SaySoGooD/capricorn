@@ -1,4 +1,5 @@
 import logging
+import math
 import queue
 import random
 import re
@@ -18,15 +19,15 @@ from src.application.assistant.interfaces.i_handle_command_usecase import IHandl
 from src.application.assistant.interfaces.i_listener_adapter import IListenerAdapter
 from src.application.assistant.interfaces.i_listener_factory import IListenerFactory
 from src.application.assistant.interfaces.i_local_chat_model_adapter import ILocalChatModelAdapter
+from src.application.assistant.interfaces.i_self_knowledge_usecase import ISelfKnowledgeUseCase
 from src.application.assistant.interfaces.i_settings_store import ISettingsStore
 from src.application.assistant.interfaces.i_sound_effects_adapter import ISoundEffectsAdapter
 from src.application.assistant.interfaces.i_speaker_adapter import ISpeakerAdapter
 from src.application.assistant.interfaces.i_speech_refiner_adapter import ISpeechRefinerAdapter
 from src.application.assistant.interfaces.i_thread_setup_adapter import IThreadSetupAdapter
 from src.application.assistant.interfaces.i_window_adapter import IWindowAdapter
-from src.application.assistant.interfaces.i_zapret_adapter import IZapretAdapter
-from src.application.assistant.persona import LINES, gendered, line
-from src.application.assistant.user_profile import apply_user, user_display_name
+from src.application.assistant.persona import persona
+from src.application.assistant.user_profile import UserProfile
 from src.application.assistant.wake_words import STOP_RE
 
 log = logging.getLogger("capri")
@@ -56,9 +57,9 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         sound_effects: ISoundEffectsAdapter,
         view: IAvatarView,
         window: IWindowAdapter,
-        zapret: IZapretAdapter,
         catalog: IAppCatalogAdapter,
         thread_setup: IThreadSetupAdapter,
+        self_knowledge: ISelfKnowledgeUseCase,
     ) -> None:
         self._settings = settings
         self._settings_error = settings_error
@@ -74,9 +75,9 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         self._sounds = sound_effects
         self._view = view
         self._window = window
-        self._zapret = zapret
         self._catalog = catalog
         self._thread_setup = thread_setup
+        self._self_knowledge = self_knowledge
 
         words = sorted(settings["wake_words"], key=len, reverse=True)
         self._wake_re = re.compile(r"(^|\s)(" + "|".join(map(re.escape, words)) + r")(?=\s|$|[,.!?])",
@@ -84,7 +85,6 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         if self._local:
             self._local.set_on_model_change(self._remember_model)
         self._config_mtime = store.modified_time()
-        self._zapret_checked = False  # предлагали ли уже исправить zapret в этом сеансе
         self._jobs: queue.Queue = queue.Queue()
         self._awake_until = 0.0
         self._last_partial_wake = 0.0
@@ -95,6 +95,10 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         self._last_activity = time.time()
         self._recent_chatter: list[str] = []
         self._listener: IListenerAdapter | None = None
+        self._booting = False      # идёт загрузка: висит плашка, микрофон пока не слушаем команды
+        self._voice_ready = False  # голос (TTS) прогрет — для процента на плашке
+        self._last_cmd = ""        # защита от дублей: та же фраза, распознанная дважды подряд
+        self._last_cmd_at = 0.0
         self._sounds.prepare_glitch(self._speaker.volume)
 
     # ----- запуск -----
@@ -107,35 +111,93 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         return self._listener
 
     def start(self) -> None:
-        apply_user(self._settings)
+        log.debug("Сессия: старт")
+        UserProfile.apply_user(self._settings)
+        threading.Thread(target=self._worker, daemon=True, name="worker").start()
         self._catalog.start_indexing()
-        threading.Thread(target=self._worker, daemon=True).start()
-        if self._local:
-            threading.Thread(target=self._local.start_server, daemon=True).start()
+        self._self_knowledge.ensure_index()  # фоном строим RAG по своему коду (эмбеддинги на CPU)
+        log.debug("Сессия: индексация приложений запущена")
         if not self._listener_factory.model_exists():
-            self._jobs.put(("say", line("no_model")))
+            log.warning("Сессия: модель распознавания речи не найдена")
+            if self._local:
+                threading.Thread(target=self._local.start_server, daemon=True, name="llm-start").start()
+            self._jobs.put(("say", persona.line("no_model")))
             return
+        boot = bool(self._settings.get("greet_on_start"))
+        self._booting = boot  # ставим ДО старта слушателя, чтобы ранние реплики не прошли мимо плашки
+        log.debug("Сессия: создаю слушатель микрофона")
         self._listener = self._listener_factory.create(
             ListenerCallbacksDTO(on_final=self.on_final, on_partial=self.on_partial, on_error=self.on_listener_error),
             device_name=self._settings.get("mic_device") or None,
             gain=float(self._settings.get("mic_gain", 1.0)),
             sensitivity=int(self._settings.get("mic_sensitivity", 100)),
         )
+        # микрофон поднимаем ПЕРВЫМ, пока LLM ещё не грузится: её старт забивает диск/CPU и глушит PortAudio/Vosk
         self._listener.start()
-        # вступление: анимация capri + приветствие
-        self._jobs.put(("say", line("greet") if self._settings.get("greet_on_start") else "", "capri"))
+        log.debug("Сессия: слушатель запущен")
+        threading.Thread(target=self._prewarm_voice, daemon=True, name="prewarm").start()
+        threading.Thread(target=self._chatter_loop, daemon=True, name="chatter").start()  # сам проверяет, включено ли
+        if boot:
+            # плашка «Инициализация… NN%» без фигуры; Капри появляется и здоровается, когда всё поднялось (вкл. 35B)
+            self._view.start_boot()
+            threading.Thread(target=self._boot_sequence, daemon=True, name="boot").start()
+        else:
+            if self._local:
+                threading.Thread(target=self._local.start_server, daemon=True, name="llm-start").start()
+            if self._settings_error:
+                self._jobs.put(("say", self._settings_error))
+        log.info("Сессия: запуск завершён, все фоновые потоки подняты")
+
+    def _boot_sequence(self) -> None:
+        """Крутит плашку «Инициализация… NN%», пока поднимаются микрофон, список программ, голос и
+        локальная модель (35B — самое долгое). Когда всё готово — Капри появляется и здоровается."""
+        t0 = time.time()
+        llm_thread = None
+        if self._local:
+            llm_thread = threading.Thread(target=self._local.start_server, daemon=True, name="llm-start")
+            llm_thread.start()
+        while True:
+            done = {
+                "mic": bool(self._listener and self._listener.active_name),
+                "catalog": self._catalog.is_ready(),
+                "voice": self._voice_ready,
+                "llm": (self._local is None) or (llm_thread is not None
+                        and not llm_thread.is_alive() and self._local.available),
+            }
+            elapsed = time.time() - t0
+            self._view.set_boot("Инициализация… %d%%" % self._boot_pct(done, elapsed))
+            if all(done.values()) or elapsed > 660:
+                break
+            time.sleep(0.25)
+        self._view.set_boot("Инициализация… 100%")
+        time.sleep(0.4)
+        self._booting = False
+        self._view.end_boot()
+        self._view.launch_effect()   # полноэкранная заставка «Капри запустилась»
+        time.sleep(1.1)              # Капри появляется посреди заставки, на её пике
+        self._jobs.put(("say", persona.line("greet"), "capri"))  # теперь Капри появляется с фигурой и здоровается
         if self._settings_error:
             self._jobs.put(("say", self._settings_error))
-        threading.Thread(target=self._chatter_loop, daemon=True).start()  # сам проверяет, включено ли
-        threading.Thread(target=self._prewarm_voice, daemon=True).start()
+        log.info("Сессия: загрузка завершена (%.0f с), Капри на связи", time.time() - t0)
+
+    @staticmethod
+    def _boot_pct(done: dict[str, bool], elapsed: float) -> int:
+        """Процент на плашке: быстрые шаги дают базу сразу, долгая загрузка 35B плавно ползёт к 99%."""
+        weights = {"mic": 15, "catalog": 10, "voice": 15, "llm": 60}
+        pct = sum(w for k, w in weights.items() if done[k])
+        if not done["llm"]:  # пока модель грузится — асимптотически подползаем к потолку её доли
+            pct += (weights["llm"] - 1) * (1 - math.exp(-elapsed / 75))
+            return min(99, int(pct))
+        return int(pct)
 
     def _prewarm_voice(self) -> None:
         """Через полминуты после запуска озвучиваем в фоне постоянные фразы и свои ответы — потом они
         звучат сразу, без ожидания сервера Microsoft."""
         time.sleep(30)
-        static = [gendered(t) for variants in LINES.values() for t in variants if "{" not in t]
+        static = [persona.gendered(t) for variants in persona.LINES.values() for t in variants if "{" not in t]
         static += list(self._settings.get("replies", {}).values())
         self._speaker.prewarm(static)
+        self._voice_ready = True
 
     # ----- спонтанные появления -----
     def _chatter_loop(self) -> None:
@@ -162,16 +224,16 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         hour = time.localtime().tm_hour
         text: str | None = None
         if 0 <= hour < 5 and random.random() < 0.5:
-            text = line("chatter_night")
+            text = persona.line("chatter_night")
         elif 6 <= hour < 11 and random.random() < 0.3:
-            text = line("chatter_morning")
+            text = persona.line("chatter_morning")
         elif self._local and random.random() < 0.4:
             text = self._local.chatter()
         for _ in range(5):
             if text and text not in self._recent_chatter:
                 break
-            text = line("chatter")
-        text = text or line("chatter")
+            text = persona.line("chatter")
+        text = text or persona.line("chatter")
         self._recent_chatter = (self._recent_chatter + [text])[-6:]
         return text
 
@@ -202,17 +264,33 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         t = text.lower()
         return bool(self._has_wake(t) or STOP_RE.search(t)) and not self._is_echo(t)
 
+    def _flush_voice_jobs(self) -> None:
+        """Выбросить накопившиеся голосовые команды из очереди (прочие задачи сохраняем).
+        Иначе после перебивания Капри подряд отработает всё, что успело накопиться."""
+        kept = []
+        try:
+            while True:
+                kept.append(self._jobs.get_nowait())
+        except queue.Empty:
+            pass
+        for j in kept:
+            if j[0] != "voice":
+                self._jobs.put(j)
+
     def interrupt(self) -> None:
         if not self._speaking or self._interrupted:
             return
         self._interrupted = True
         self._speaker.stop()
+        self._flush_voice_jobs()
         self._awake_until = time.time() + self._settings["listen_window_seconds"]
         self._view.set_mode("listening", float(self._settings["listen_window_seconds"]))
-        self._view.set_subtitle(line("listen"))
+        self._view.set_subtitle(persona.line("listen"))
         log.info("Капри перебили")
 
     def on_partial(self, text: str) -> None:
+        if self._booting:
+            return  # идёт загрузка — висит плашка, микрофон команды пока не слушает
         now = time.time()
         if self._speaking:
             if self._settings.get("barge_in") and self._wants_interrupt(text):
@@ -223,12 +301,16 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             self._appear(self._settings["listen_window_seconds"])
 
     def on_final(self, text: str, audio: bytes) -> None:
+        if self._booting:
+            return  # идёт загрузка — висит плашка, микрофон команды пока не слушает
         now = time.time()
+        log.debug("Микрофон распознал: %r (speaking=%s, awake=%.1f)", text, self._speaking,
+                  max(0.0, self._awake_until - now))
         listen = self._settings["listen_window_seconds"]
         if self._handle.autoscroll_active() and STOP_RE.search(text.lower()) and not self._is_echo(text):
             # во время автопрокрутки «стоп» слышим и без имени
             self._handle.stop_background()
-            self._view.set_subtitle(line("scroll_stop"))
+            self._view.set_subtitle(persona.line("scroll_stop"))
             return
         if self._speaking and not self._interrupted:
             if not (self._settings.get("barge_in") and self._wants_interrupt(text)):
@@ -244,7 +326,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             # «Капри, стоп» — замолчать, остановить автопрокрутку и слушать дальше
             self._awake_until = now + listen
             if self._handle.stop_background():
-                self._view.set_subtitle(line("scroll_stop"))
+                self._view.set_subtitle(persona.line("scroll_stop"))
             return
         if len(cmd) < 2:
             self._awake_until = now + listen
@@ -253,10 +335,15 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
                 self._appear(listen)
             return
         self._awake_until = 0
+        # та же команда, распознанная повторно за пару секунд (эхо/дубль STT) — не ставим второй раз
+        if cmd == self._last_cmd and now - self._last_cmd_at < 5:
+            self._last_cmd_at = now
+            return
+        self._last_cmd, self._last_cmd_at = cmd, now
         self._jobs.put(("voice", cmd, audio, woke))
 
     def on_listener_error(self, err: Any, kind: str = "mic") -> None:
-        self._jobs.put(("say", line("model_broken" if kind == "model" else "no_mic")))
+        self._jobs.put(("say", persona.line("model_broken" if kind == "model" else "no_mic")))
 
     # ----- настройки из трея и окон -----
     def set_profile(self, mode: str, name: str, gender: str) -> None:
@@ -264,8 +351,8 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         for key, value in (("user_name_mode", mode), ("user_name", name), ("user_gender", gender)):
             self._settings[key] = value
             self._store.save_setting(key, value)
-        apply_user(self._settings)
-        log.info("Обращение: %s, %s", user_display_name(self._settings) or "без имени", gender)
+        UserProfile.apply_user(self._settings)
+        log.info("Обращение: %s, %s", UserProfile.user_display_name(self._settings) or "без имени", gender)
 
     def _set_flag(self, key: str, on: bool, what: str) -> None:
         self._settings[key] = bool(on)
@@ -301,7 +388,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
         for key in LIVE_KEYS:
             self._settings[key] = fresh.settings[key]
         self._context.set_lists(self._settings)
-        apply_user(self._settings)
+        UserProfile.apply_user(self._settings)
         log.info("config.json перечитан")
 
     # ----- микрофон и голос -----
@@ -324,7 +411,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             self._listener.set_device(name)
         log.info("Выбран микрофон: %s", name or "по умолчанию")
         if announce:
-            self._jobs.put(("say", line("mic_set", t=name or "микрофон Windows по умолчанию")))
+            self._jobs.put(("say", persona.line("mic_set", t=name or "микрофон Windows по умолчанию")))
 
     def set_mic_tuning(self, gain: float | None = None, sensitivity: int | None = None) -> None:
         """Громкость ввода и чувствительность микрофона для Капри — сразу и запоминаются."""
@@ -354,26 +441,30 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
 
     def _mic_command(self, action: str) -> ReplyDTO:
         if action == "mic_info":
-            return ReplyDTO(line("mic_info", t=self.current_mic()))
+            return ReplyDTO(persona.line("mic_info", t=self.current_mic()))
         devices = self._devices.input_devices()
         if len(devices) < 2:
-            return ReplyDTO(line("mic_only_one", t=self.current_mic()))
+            return ReplyDTO(persona.line("mic_only_one", t=self.current_mic()))
         cur = self._settings.get("mic_device") or self.current_mic()
         idx = next((i for i, n in enumerate(devices) if n == cur or cur.startswith(n) or n.startswith(cur)), -1)
         nxt = devices[(idx + 1) % len(devices)]
         self.set_mic(nxt, announce=False)
-        return ReplyDTO(line("mic_set", t=nxt))
+        return ReplyDTO(persona.line("mic_set", t=nxt))
 
     # ----- ввод не голосом -----
     def call_from_click(self) -> None:
+        if self._booting:
+            return  # пока грузимся — не реагируем на клики
+        log.info("Вход: клик по аватару/трею (speaking=%s)", self._speaking)
         if self._speaking:
             self.interrupt()
             return
         self._awake_until = time.time() + self._settings["listen_window_seconds"]
         self._appear(self._settings["listen_window_seconds"])
-        self._view.set_subtitle(line("listen"))
+        self._view.set_subtitle(persona.line("listen"))
 
     def text_command(self, text: str) -> None:
+        log.info("Вход: текстовая команда: %s", text)
         self._view.summon()
         self._jobs.put(("text", text))
 
@@ -384,13 +475,17 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
     # ----- рабочий поток -----
     def _worker(self) -> None:
         self._thread_setup.prepare_worker_thread()
+        log.debug("Рабочий поток готов, жду задачи")
         while True:
             job = self._jobs.get()
+            log.debug("Рабочий поток: получена задача %s", job[0])
             try:
                 self._process(job)
             except Exception:
                 log.exception("Ошибка обработки %s", job[0])
-                self.say(line("crash"))
+                self.say(persona.line("crash"))
+            else:
+                log.debug("Рабочий поток: задача %s обработана", job[0])
 
     def _process(self, job: tuple) -> None:
         kind = job[0]
@@ -432,7 +527,7 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
                 # просто позвали по имени — не болтаем, а слушаем
                 self._awake_until = time.time() + listen
                 view.set_mode("listening", listen)
-                view.set_subtitle(line("listen"))
+                view.set_subtitle(persona.line("listen"))
                 return
             cmd = stripped
         log.info("Команда: %s", cmd)
@@ -445,11 +540,14 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             reply = self._mic_command(reply.action)
         if reply is None:
             if self._settings.get("enable_ai") and self._cloud.available:
-                reply = ReplyDTO(self._cloud.ask(cmd) or line("dont_know"), "answer")
+                reply = ReplyDTO(self._cloud.ask(cmd) or persona.line("dont_know"), "answer")
             else:
-                answer = self._local.ask(cmd) if self._local else None
+                # гугл форсим только если локальная модель реально отвечает; если она прописана,
+                # но её сервер не поднят — не гуглим всё подряд, а решаем по виду фразы (вопрос или нет)
+                local_up = bool(self._local) and self._local.available
+                answer = self._local.ask(cmd) if local_up else None
                 reply = ReplyDTO(answer, "answer") if answer else self._handle.fallback(
-                    cmd, force_search=bool(self._local))
+                    cmd, force_search=local_up)
         if reply.action == "answer" and self._settings.get("teleport_on_answer"):
             view.hop()  # отвечает, скача по экрану красной молнией
         if reply.action == "wave":
@@ -495,33 +593,4 @@ class AssistantSessionUseCase(IAssistantSessionUseCase):
             if listener and not barge_in:
                 time.sleep(0.25)
                 listener.unmute()
-        self._check_voice_blocked()
         return self._interrupted
-
-    def _check_voice_blocked(self) -> None:
-        """Голос Microsoft не прошёл из-за сети, а запущен zapret — один раз за сеанс объясняем
-        и предлагаем добавить сервер голоса в исключения zapret."""
-        err = self._speaker.last_error
-        z = self._zapret
-        if self._zapret_checked or not err or not z.is_network_error(err) or not z.running():
-            return
-        self._zapret_checked = True
-        all_lists = z.find_all_lists()
-        todo = [lst for lst in all_lists if not z.excluded(lst)]
-        if not all_lists:
-            self._jobs.put(("say", line("zapret_manual")))
-        elif not todo:
-            self._jobs.put(("say", line("zapret_restart")))
-        else:
-            def fix() -> ReplyDTO:
-                try:
-                    for lst in todo:  # во все найденные копии zapret — какая из них запущена, не видно
-                        z.add_exclude(lst)
-                        log.info("Сервер голоса добавлен в исключения zapret (имя и адреса): %s", lst)
-                except OSError as e:
-                    log.exception("Не удалось дописать исключение zapret")
-                    return ReplyDTO(line("zapret_fail", e=e))
-                return ReplyDTO(line("zapret_fixed"))
-            self._context.pending = fix
-            self._awake_until = time.time() + 20  # ответ «да» без имени
-            self._jobs.put(("say", line("zapret_offer")))

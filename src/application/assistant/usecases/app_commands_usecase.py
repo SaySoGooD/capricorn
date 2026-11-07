@@ -8,15 +8,15 @@ from src.application.assistant.command_context import CommandContext
 from src.application.assistant.dto.app_candidate_dto import AppCandidateDTO
 from src.application.assistant.dto.process_dto import ProcessGroupDTO
 from src.application.assistant.dto.reply_dto import ReplyDTO
-from src.application.assistant.fuzzy import sounds_like
+from src.application.assistant.fuzzy import Fuzzy
 from src.application.assistant.interfaces.i_app_catalog_adapter import IAppCatalogAdapter
 from src.application.assistant.interfaces.i_app_commands_usecase import IAppCommandsUseCase
 from src.application.assistant.interfaces.i_file_system_adapter import IFileSystemAdapter
 from src.application.assistant.interfaces.i_open_url_usecase import IOpenUrlUseCase
 from src.application.assistant.interfaces.i_process_adapter import IProcessAdapter
 from src.application.assistant.interfaces.i_window_adapter import IWindowAdapter
-from src.application.assistant.persona import line
-from src.application.assistant.text import norm, translit
+from src.application.assistant.persona import persona
+from src.application.assistant.text import Text
 
 ORDS = ["первое", "второе", "третье"]
 
@@ -52,9 +52,9 @@ class AppCommandsUseCase(IAppCommandsUseCase):
         words = re.sub(r"^(открой|запусти|давай|вот|это|ну)\s+", "", c)
         best, best_i = 0.0, None
         for i, (name, _) in enumerate(options):
-            for v in {words, translit(words)}:
+            for v in {words, Text.translit(words)}:
                 s = 1.0 if v and v in name else difflib.SequenceMatcher(None, v, name).ratio()
-                if sounds_like(v, name.split()[0] if name.split() else name):
+                if Fuzzy.sounds_like(v, name.split()[0] if name.split() else name):
                     s = max(s, 0.86)
                 if s > best:
                     best, best_i = s, i
@@ -71,9 +71,9 @@ class AppCommandsUseCase(IAppCommandsUseCase):
             if callable(act):
                 return act()
             started = self._catalog.launch_best(name, [AppCandidateDTO(1.0, name, act)])
-            return ReplyDTO(line("launch", t=started) if started else line("app_missing", t=name))
+            return ReplyDTO(persona.line("launch", t=started) if started else persona.line("app_missing", t=name))
         if re.match(r"^(никак\w*|ни одно|ни то|отмена|не надо|нет|ничего)\b", c):
-            return ReplyDTO(line("cancel"))
+            return ReplyDTO(persona.line("cancel"))
         return None
 
     # --- открыть ---
@@ -98,44 +98,56 @@ class AppCommandsUseCase(IAppCommandsUseCase):
             found = self._file_system.find_folder(explicit.group("n") if explicit else t, search=bool(explicit))
             if found:
                 self._file_system.open_path(found.path)
-                return ReplyDTO(line("folder_open", t=found.label))
+                return ReplyDTO(persona.line("folder_open", t=found.label))
             if explicit:
-                return ReplyDTO(line("folder_missing", t=explicit.group("n")))
+                return ReplyDTO(persona.line("folder_missing", t=explicit.group("n")))
 
         apps, sites = self._context.apps, self._context.sites
         if not site_mode and t in apps:
             self._run(apps[t])
-            return ReplyDTO(line("open", t=t))
+            return ReplyDTO(persona.line("open", t=t))
 
         if t in sites:
             self._open_url(sites[t])
-            return ReplyDTO(line("open", t=t))
+            return ReplyDTO(persona.line("open", t=t))
         close = difflib.get_close_matches(t, list(sites), n=1, cutoff=0.82)
         if close:
             self._open_url(sites[close[0]])
-            return ReplyDTO(line("open", t=close[0]))
+            return ReplyDTO(persona.line("open", t=close[0]))
 
         domain = re.sub(r"\s*(точка|dot)\s*", ".", t).replace(" ", "")
         if re.fullmatch(r"[\w\-]+(\.[\w\-]+)*\.[a-zа-я]{2,}", domain):
             self._open_url("https://" + domain)
-            return ReplyDTO(line("open", t=domain))
+            return ReplyDTO(persona.line("open", t=domain))
 
         if not site_mode:
             self._catalog.wait_ready(8)
             options = self._catalog.candidates(t, self._context.aliases)
             if not options:
-                return ReplyDTO(line("app_missing", t=t))
+                # не программа и не известный сайт → трактуем «открой X» как открыть сайт X
+                # и прыгаем сразу на него (не в выдачу — это делает «найди X»)
+                self._open_web(t)
+                return ReplyDTO(persona.line("web_site", t=t))
             top = options[0]
             similar = [o for o in options[1:] if top.score - o.score < 0.1]
             if top.score >= 1.0 or not similar:  # одно явно подходит — запускаем
                 started = self._catalog.launch_best(t, [top])
-                return ReplyDTO(line("launch", t=started) if started else line("app_missing", t=t))
+                return ReplyDTO(persona.line("launch", t=started) if started else persona.line("app_missing", t=t))
             # несколько похожих — спрашиваем, какое открыть
             self._context.choice = [(o.name, o.target) for o in [top] + similar[:2]]
             listed = ", ".join(f"{ORDS[i]} — {n.title()}" for i, (n, _) in enumerate(self._context.choice))
-            return ReplyDTO(line("choose_app", t=listed), "ask")
-        self._open_url("https://www.google.com/search?q=" + urllib.parse.quote(t))
-        return ReplyDTO(line("site_unknown", t=t))
+            return ReplyDTO(persona.line("choose_app", t=listed), "ask")
+        self._open_web(t)
+        return ReplyDTO(persona.line("web_site", t=t))
+
+    def _open_web(self, t: str) -> None:
+        """«Открой X», когда X — не программа и не домен: открываем сам сайт.
+
+        I'm Feeling Ducky у DuckDuckGo (префикс «\\») делает 302 сразу на первый
+        результат, то есть мы попадаем на сам сайт, а не на страницу выдачи.
+        «Найди X» по-прежнему открывает именно выдачу — в этом и разница.
+        """
+        self._open_url("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + t))
 
     # --- закрыть ---
     def kill_process(self, c: str, m: re.Match) -> ReplyDTO:
@@ -151,37 +163,37 @@ class AppCommandsUseCase(IAppCommandsUseCase):
         t = re.sub(r"\s+(принудительно|насильно|жестко|совсем)$", "", t).strip()
         if re.fullmatch(r"(окно|это|это окно)", t):
             self._window.close_foreground()
-            return ReplyDTO(line("closed_window"))
-        q = norm(t)
-        variants = {q, translit(q)}
+            return ReplyDTO(persona.line("closed_window"))
+        q = Text.norm(t)
+        variants = {q, Text.translit(q)}
         if q in self._context.aliases:
-            variants.add(norm(self._context.aliases[q]))
+            variants.add(Text.norm(self._context.aliases[q]))
         if q in self._context.apps:
             variants.add(os.path.splitext(os.path.basename(self._context.apps[q]))[0].lower())
         if self._catalog.is_ready():  # «закрой клод» → приложение Claude → процесс claude
             for cand in self._catalog.candidates(q, self._context.aliases, 2):
                 variants.add(cand.name.split()[0])
         variants = {v.replace(" ", "") for v in variants if len(v.replace(" ", "")) >= 3}
-        words = [w for w in translit(q).split() if len(w) >= 3]  # для сравнения с описанием из диспетчера задач
+        words = [w for w in Text.translit(q).split() if len(w) >= 3]  # для сравнения с описанием из диспетчера задач
 
         groups = self._processes.find_groups(variants, words)
         if not groups:
-            return ReplyDTO(line("not_running", t=t))
+            return ReplyDTO(persona.line("not_running", t=t))
         top = groups[0]
         similar = [g for g in groups[1:] if top.score - g.score < 0.1]
         if top.score < 1.0 and similar:  # несколько похожих — спрашиваем, что закрыть
             self._context.choice = [(g.name, (lambda g=g: self._kill(g, force))) for g in [top] + similar[:2]]
             listed = ", ".join(f"{ORDS[i]} — {n}" for i, (n, _) in enumerate(self._context.choice))
-            return ReplyDTO(line("choose_close", t=listed), "ask")
+            return ReplyDTO(persona.line("choose_close", t=listed), "ask")
         return self._kill(top, force)
 
     def _kill(self, group: ProcessGroupDTO, force: bool) -> ReplyDTO:
         status = self._processes.kill(group, force)
         if status == "denied":
-            return ReplyDTO(line("kill_denied", t=group.name))
+            return ReplyDTO(persona.line("kill_denied", t=group.name))
         if status == "failed":
-            return ReplyDTO(line("kill_failed", t=group.name))
-        return ReplyDTO(line("closed", names=group.name))
+            return ReplyDTO(persona.line("kill_failed", t=group.name))
+        return ReplyDTO(persona.line("closed", names=group.name))
 
     # --- создать ---
     def create(self, c: str, m: re.Match) -> ReplyDTO | None:
@@ -192,7 +204,7 @@ class AppCommandsUseCase(IAppCommandsUseCase):
         if place_m:
             spot = self._file_system.find_folder(re.sub(r"^папк\w* ", "", place_m.group(2)), search=True)
             if not spot:
-                return ReplyDTO(line("folder_missing", t=place_m.group(2)))
+                return ReplyDTO(persona.line("folder_missing", t=place_m.group(2)))
             place, place_name = spot.path, f"в папке «{spot.label}»"
             what = what[:place_m.start()]
         kind = re.match(r"(нов\w+ )?(?P<kind>папк\w*|текстов\w+ файл\w*|текстов\w+ документ\w*|"
@@ -203,7 +215,7 @@ class AppCommandsUseCase(IAppCommandsUseCase):
         ext = ""
         dot = re.search(r"\s*(точка|dot|\.)\s*(?P<e>[a-zа-я0-9]+)$", name)
         if dot:  # «файл заметки точка txt»
-            ext, name = "." + translit(dot.group("e")), name[:dot.start()].strip()
+            ext, name = "." + Text.translit(dot.group("e")), name[:dot.start()].strip()
         if k.startswith("папк"):
             default = "Новая папка"
         elif k.startswith("таблиц"):
@@ -215,4 +227,4 @@ class AppCommandsUseCase(IAppCommandsUseCase):
         name = re.sub(r'[<>:"/\\|?*]', "", name).strip() or default
         name = name[:1].upper() + name[1:]
         path = self._file_system.create(place, name, ext, is_folder=k.startswith("папк"))
-        return ReplyDTO(line("created", t=os.path.basename(path), where=place_name))
+        return ReplyDTO(persona.line("created", t=os.path.basename(path), where=place_name))

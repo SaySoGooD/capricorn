@@ -10,9 +10,9 @@ from src.application.assistant.interfaces.i_memory_commands_usecase import IMemo
 from src.application.assistant.interfaces.i_open_url_usecase import IOpenUrlUseCase
 from src.application.assistant.interfaces.i_remember_entry_usecase import IRememberEntryUseCase
 from src.application.assistant.interfaces.i_window_adapter import IWindowAdapter
-from src.application.assistant.persona import line
+from src.application.assistant.persona import persona
 from src.application.assistant.processes import PROTECTED_PROCS
-from src.application.assistant.text import norm
+from src.application.assistant.text import Text
 
 
 class MemoryCommandsUseCase(IMemoryCommandsUseCase):
@@ -55,33 +55,33 @@ class MemoryCommandsUseCase(IMemoryCommandsUseCase):
         name = name.strip(" «»\"")
         site = re.search(r"(сайт|страниц|вкладк|ссылк)", m.group("what"))
         if not name:
-            return ReplyDTO(line("remember_noname", what="этот сайт" if site else "эту программу"))
+            return ReplyDTO(persona.line("remember_noname", what="этот сайт" if site else "эту программу"))
         if site:
             url = self._browser.foreground_page_url()
             if not url:
-                return ReplyDTO(line("remember_nosite"))
+                return ReplyDTO(persona.line("remember_nosite"))
             err = self._remember("sites", name, url)
             short = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
-            return ReplyDTO(line("remember_fail", e=err) if err else line("remember_site", t=name, url=short))
+            return ReplyDTO(persona.line("remember_fail", e=err) if err else persona.line("remember_site", t=name, url=short))
         exe = self._window.foreground_exe()
         base = os.path.splitext(os.path.basename(exe or ""))[0].lower()
         if not exe or base in PROTECTED_PROCS or base == "applicationframehost":
-            return ReplyDTO(line("remember_noapp"))
+            return ReplyDTO(persona.line("remember_noapp"))
         err = self._remember("apps", name, exe)
-        return ReplyDTO(line("remember_fail", e=err) if err else line("remember_app", t=name, app=base))
+        return ReplyDTO(persona.line("remember_fail", e=err) if err else persona.line("remember_app", t=name, app=base))
 
     def forget_cmd(self, c: str, m: re.Match) -> ReplyDTO:
-        name = norm(m.group("name"))
+        name = Text.norm(m.group("name"))
         section = "sites" if re.search(r"(сайт|страниц|вкладк|ссылк)", m.group("what")) else "apps"
         if name not in self._context.book(section):
-            return ReplyDTO(line("forget_missing", t=name))
+            return ReplyDTO(persona.line("forget_missing", t=name))
         err = self._remember(section, name, None)
-        return ReplyDTO(line("remember_fail", e=err) if err else line("forget_ok", t=name))
+        return ReplyDTO(persona.line("remember_fail", e=err) if err else persona.line("forget_ok", t=name))
 
     def updates(self, c: str, m: re.Match) -> ReplyDTO:
         """Страница Капри на GitHub — там новые версии."""
         self._open_url(CAPRI_URL)
-        return ReplyDTO(line("updates"))
+        return ReplyDTO(persona.line("updates"))
 
     def reply_cmd(self, c: str, m: re.Match) -> ReplyDTO:
         """«Когда я скажу „как дела“, отвечай „лучше всех“» — свой ответ на фразу."""
@@ -91,14 +91,14 @@ class MemoryCommandsUseCase(IMemoryCommandsUseCase):
         if not re.search(r"[.!?…]$", text):
             text += "."
         err = self._remember("replies", phrase, text)
-        return ReplyDTO(line("remember_fail", e=err) if err else line("reply_saved", p=phrase, r=text))
+        return ReplyDTO(persona.line("remember_fail", e=err) if err else persona.line("reply_saved", p=phrase, r=text))
 
     def forget_reply_cmd(self, c: str, m: re.Match) -> ReplyDTO:
-        phrase = norm(m.group("p"))
+        phrase = Text.norm(m.group("p"))
         replies = self._context.replies
         close = phrase if phrase in replies else next(
             iter(difflib.get_close_matches(phrase, list(replies), n=1, cutoff=0.85)), None)
         if not close:
-            return ReplyDTO(line("forget_missing", t=phrase))
+            return ReplyDTO(persona.line("forget_missing", t=phrase))
         err = self._remember("replies", close, None)
-        return ReplyDTO(line("remember_fail", e=err) if err else line("forget_ok", t=close))
+        return ReplyDTO(persona.line("remember_fail", e=err) if err else persona.line("forget_ok", t=close))

@@ -35,6 +35,12 @@ def _urlbar(hwnd):
     return None, None
 
 
+def switch_tab(n):
+    """Перейти на вкладку по номеру горячими клавишами браузера: Ctrl+1..8, последняя — Ctrl+9."""
+    n = 9 if n >= 9 else max(1, n)
+    send_keys(["ctrl", str(n)])
+
+
 def page_url(hwnd):
     """Адрес любой открытой вкладки браузера (для «запомни этот сайт») или None."""
     try:

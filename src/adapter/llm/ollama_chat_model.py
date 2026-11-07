@@ -9,15 +9,8 @@ import subprocess
 import time
 import urllib.request
 
-from src.application.assistant.llm_text import (
-    FOREIGN,
-    REASONING,
-    drop_repeats,
-    drop_third_person,
-    naturalize,
-    strip_reasoning,
-)
-from src.application.assistant.persona import CHARACTER, SPEECH_RULES, user_context
+from src.application.assistant.llm_text import LlmText
+from src.application.assistant.persona import persona
 
 log = logging.getLogger("capri")
 URL = "http://127.0.0.1:11434"
@@ -25,9 +18,9 @@ NO_WINDOW = 0x08000000
 SEARCH_MARK = "ПОИСК"
 NO_THINKING = "Сразу дай готовый ответ от лица Капри. Без рассуждений, без анализа вопроса, без «пользователь хочет»."
 
-SYSTEM = f"""{CHARACTER}
+SYSTEM = f"""{persona.CHARACTER}
 
-{SPEECH_RULES}
+{persona.SPEECH_RULES}
 Отвечай на любые вопросы о науке, истории, технике, языке, о себе, советы и просьбы рассказать что-то.
 Только если вопрос про текущие события (погода сейчас, свежие новости, курсы валют, цены,
 результаты недавних матчей), ответь ровно одним словом: {SEARCH_MARK}"""
@@ -125,6 +118,14 @@ class LocalAI:
         except Exception as e:
             log.info("Не удалось прогреть модель: %s", e)
 
+    def stop_server(self):
+        """Выгрузить модель из памяти (освободить VRAM), не останавливая саму Ollama."""
+        try:
+            _post("/api/generate", {"model": self.model, "prompt": "", "keep_alive": 0}, 30)
+            log.info("Локальная модель %s выгружена из памяти", self.model)
+        except Exception as e:
+            log.info("Не удалось выгрузить модель: %s", e)
+
     def _chat(self, messages, max_tokens=300):
         resp = _post("/api/chat", {
             "model": self.model,
@@ -134,14 +135,24 @@ class LocalAI:
             "keep_alive": "10m",
             "options": {"num_predict": max_tokens, "temperature": 0.6, "repeat_penalty": 1.15},
         }, 120)
-        text = strip_reasoning(resp.get("message", {}).get("content", ""))
-        if REASONING.search(text):
+        text = LlmText.strip_reasoning(resp.get("message", {}).get("content", ""))
+        if LlmText.REASONING.search(text):
             # модель всё равно «думает» вслух — переспрашиваем, а если опять, ответа нет
             log.info("Модель %s рассуждает вслух вместо ответа", self.model)
             if messages[-1].get("content", "").startswith(NO_THINKING):
                 return ""
             return self._chat(messages + [{"role": "system", "content": NO_THINKING}], max_tokens)
         return text
+
+    def instruct(self, system, user):
+        """Разовый ответ на инструкцию без характера и истории (напр. подбор тегов для картинки)."""
+        try:
+            text = self._chat([{"role": "system", "content": system}, {"role": "user", "content": user}], 200)
+        except Exception as e:
+            log.info("instruct недоступен: %s", e)
+            return None
+        text = re.sub(r"\s+", " ", (text or "")).strip()
+        return text or None
 
     def ask(self, question):
         """Текст ответа или None, если лучше открыть поиск."""
@@ -150,19 +161,19 @@ class LocalAI:
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         self.history.append({"role": "user", "content": question})
         self.history = self.history[-6:]
-        messages = [{"role": "system", "content": SYSTEM + "\n" + user_context() + f"\nСейчас {now}."}] + self.history
+        messages = [{"role": "system", "content": SYSTEM + "\n" + persona.user_context() + f"\nСейчас {now}."}] + self.history
         try:
             answer = self._chat(messages)
-            if FOREIGN.search(answer):  # Qwen иногда срывается на китайский — пробуем ещё раз
+            if LlmText.FOREIGN.search(answer):  # Qwen иногда срывается на китайский — пробуем ещё раз
                 answer = self._chat(messages + [{"role": "system", "content":
                                     "Ответь заново, строго только русскими буквами, без иероглифов."}])
-            answer = re.sub(r"\s+", " ", FOREIGN.sub("", answer)).strip()
+            answer = re.sub(r"\s+", " ", LlmText.FOREIGN.sub("", answer)).strip()
         except Exception as e:
             log.info("Локальная модель недоступна: %s", e)
             self.history.pop()
             return None
         recent = [m["content"] for m in self.history if m["role"] == "assistant"]
-        answer = naturalize(drop_repeats(drop_third_person(answer), self.history), question, recent)
+        answer = LlmText.naturalize(LlmText.drop_repeats(LlmText.drop_third_person(answer), self.history), question, recent)
         answer = re.sub(r"\s*\([^)]*\)", "", answer)                      # ремарки в скобках
         answer = re.sub(r"[\U0001F000-\U0001FAFF☀-➿️]", "", answer)  # эмодзи
         answer = re.sub(r"\s+", " ", answer).strip()
@@ -178,7 +189,7 @@ class LocalAI:
         """Короткая спонтанная реплика, когда Капри появляется сама. None — если модель недоступна."""
         try:
             text = self._chat([
-                {"role": "system", "content": SYSTEM + "\n" + user_context()},
+                {"role": "system", "content": SYSTEM + "\n" + persona.user_context()},
                 {"role": "user", "content":
                  "Ты сама решила ненадолго появиться на экране. Скажи одну короткую спонтанную фразу, "
                  f"до пятнадцати слов. Тема: {random.choice(CHATTER_TOPICS)}. "
@@ -186,14 +197,14 @@ class LocalAI:
             ], max_tokens=60)
         except Exception:
             return None
-        text = drop_third_person(re.sub(r"\s+", " ", FOREIGN.sub("", text)).strip().strip('"«»'))
+        text = LlmText.drop_third_person(re.sub(r"\s+", " ", LlmText.FOREIGN.sub("", text)).strip().strip('"«»'))
         text = re.sub(r"[\U0001F000-\U0001FAFF☀-➿️]", "", text).strip()
         return text if 5 < len(text) < 160 and re.search(r"[.!?…]$", text) else None
 
     def summarize_report(self, report):
         try:
             return self._chat([
-                {"role": "system", "content": SYSTEM + "\n" + user_context()},
+                {"role": "system", "content": SYSTEM + "\n" + persona.user_context()},
                 {"role": "user", "content":
                  "Вот отчёт диагностики моего ПК. Скажи 2–4 предложения: общее состояние, главные "
                  "проблемы и что сделать. Безвредные ошибки вроде DistributedCOM не раздувай.\n\n"

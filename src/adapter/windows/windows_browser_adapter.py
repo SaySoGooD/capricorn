@@ -19,3 +19,6 @@ class WindowsBrowserAdapter(IBrowserAdapter):
 
     def foreground_page_url(self) -> str | None:
         return browser_tabs.page_url(ctypes.windll.user32.GetForegroundWindow())
+
+    def switch_tab(self, n: int) -> None:
+        browser_tabs.switch_tab(n)

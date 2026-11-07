@@ -7,8 +7,8 @@ import subprocess
 import threading
 
 from src.adapter.windows.powershell import NO_WINDOW, ps_json
-from src.application.assistant.fuzzy import sounds_like
-from src.application.assistant.text import norm, translit
+from src.application.assistant.fuzzy import Fuzzy
+from src.application.assistant.text import Text
 
 log = logging.getLogger("capri")
 
@@ -44,7 +44,7 @@ def installed_programs():
             exe = re.sub(r",\s*-?\d+$", "", values["DisplayIcon"]).strip().strip('"')
             base = os.path.basename(exe).lower()
             if exe.lower().endswith(".exe") and "unins" not in base and "setup" not in base and os.path.isfile(exe):
-                out.append((norm(name), exe))
+                out.append((Text.norm(name), exe))
                 continue
             # значок — деинсталлятор (так у Steam): ищем рядом exe с названием программы, steam → steam.exe
             folder = values["InstallLocation"].strip().strip('"')
@@ -53,7 +53,7 @@ def installed_programs():
                 folder = os.path.dirname(m.group(1)) if m else ""
             guess = os.path.join(folder, re.sub(r"[^\w\-]", "", name) + ".exe") if folder else ""
             if guess and os.path.isfile(guess):
-                out.append((norm(name), guess))
+                out.append((Text.norm(name), guess))
     return out
 
 
@@ -67,7 +67,7 @@ class AppIndex:
         items = {}
         try:
             for app in ps_json("Get-StartApps | Select-Object Name,AppID"):
-                name = norm(app.get("Name") or "")
+                name = Text.norm(app.get("Name") or "")
                 if name and not any(w in name for w in SKIP_WORDS):
                     items[name] = ("appid", app.get("AppID"))
         except Exception:
@@ -81,7 +81,7 @@ class AppIndex:
             for root, _, files in os.walk(d):
                 for f in files:
                     if f.lower().endswith((".lnk", ".url", ".appref-ms")):
-                        name = norm(os.path.splitext(f)[0])
+                        name = Text.norm(os.path.splitext(f)[0])
                         # ярлык надёжнее идентификатора из Get-StartApps: у программ вроде Discord
                         # (установщик Squirrel) запуск по идентификатору ничего не открывает
                         if (name and not any(w in name for w in SKIP_WORDS)
@@ -98,10 +98,10 @@ class AppIndex:
 
     def candidates(self, query, aliases, limit=4):
         """Подходящие приложения, лучшие первыми: [(оценка, название, цель)]."""
-        q = norm(query)
-        variants = {q, translit(q)}
+        q = Text.norm(query)
+        variants = {q, Text.translit(q)}
         if q in aliases:
-            variants.add(norm(aliases[q]))
+            variants.add(Text.norm(aliases[q]))
         with self.lock:
             items = list(self.items.items())
         scored = {}
@@ -115,9 +115,9 @@ class AppIndex:
                 else:
                     score = difflib.SequenceMatcher(None, v, name).ratio()
                     first = name.split()[0] if name.split() else name
-                    if sounds_like(v, name):
+                    if Fuzzy.sounds_like(v, name):
                         score = max(score, 0.97)  # звучит как всё название: «роблокс» = «roblox»
-                    elif sounds_like(v, first):
+                    elif Fuzzy.sounds_like(v, first):
                         score = max(score, 0.86)  # звучит так же: «клод/cloud» ~ «claude»
                 best = max(best, score)
             if best >= 0.72 and best > scored.get(name, (0,))[0]:

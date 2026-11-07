@@ -18,11 +18,17 @@ class OllamaChatModelAdapter(ILocalChatModelAdapter):
     def ask(self, question: str) -> str | None:
         return self._local.ask(question)
 
+    def instruct(self, system: str, user: str) -> str | None:
+        return self._local.instruct(system, user)
+
     def summarize_report(self, report: str) -> str | None:
         return self._local.summarize_report(report)
 
     def start_server(self) -> None:
         self._local.start_server()
+
+    def stop_server(self) -> None:
+        self._local.stop_server()
 
     def chatter(self) -> str | None:
         return self._local.chatter()

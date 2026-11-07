@@ -1,7 +1,7 @@
 from src.application.assistant.command_context import CommandContext
 from src.application.assistant.interfaces.i_remember_entry_usecase import IRememberEntryUseCase
 from src.application.assistant.interfaces.i_settings_store import ISettingsStore
-from src.application.assistant.text import norm
+from src.application.assistant.text import Text
 
 
 class RememberEntryUseCase(IRememberEntryUseCase):
@@ -12,7 +12,7 @@ class RememberEntryUseCase(IRememberEntryUseCase):
         self._store = store
 
     def __call__(self, section: str, name: str, target: str | None) -> str | None:
-        name = norm(name)
+        name = Text.norm(name)
         err = self._store.save_entry(section, name, target)
         if err:
             return err

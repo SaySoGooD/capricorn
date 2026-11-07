@@ -7,10 +7,10 @@ import psutil
 
 from src.adapter.windows.processes import file_description
 from src.application.assistant.dto.process_dto import ProcessGroupDTO, ProcessUsageDTO, TopProcessesDTO
-from src.application.assistant.fuzzy import sounds_like
+from src.application.assistant.fuzzy import Fuzzy
 from src.application.assistant.interfaces.i_process_adapter import IProcessAdapter
 from src.application.assistant.processes import PROTECTED_PROCS
-from src.application.assistant.text import norm
+from src.application.assistant.text import Text
 
 
 class WindowsProcessAdapter(IProcessAdapter):
@@ -32,12 +32,12 @@ class WindowsProcessAdapter(IProcessAdapter):
                     s = 0.9  # «steam» не считается совпадением для «steamclienthelper»
                 else:
                     s = difflib.SequenceMatcher(None, v, name).ratio()
-                    if sounds_like(v, name):
+                    if Fuzzy.sounds_like(v, name):
                         s = max(s, 0.86)
                 score = max(score, s)
             if score < 0.95 and words:
                 # «steam client helper» → описание «Steam Client WebHelper» у steamwebhelper.exe
-                desc = norm(file_description(p.info["exe"]))
+                desc = Text.norm(file_description(p.info["exe"]))
                 if desc:
                     if desc == " ".join(words):
                         score = 1.0

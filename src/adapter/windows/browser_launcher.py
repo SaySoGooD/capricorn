@@ -3,7 +3,7 @@ import os
 import re
 
 from src.application.assistant.browsers import BROWSER_WORDS
-from src.application.assistant.text import norm
+from src.application.assistant.text import Text
 
 
 def installed_browsers():
@@ -39,7 +39,7 @@ def find_browser(name):
         return None
     if os.path.isfile(name):
         return name
-    n = norm(name)
+    n = Text.norm(name)
     for pattern, k in BROWSER_WORDS:
         if re.fullmatch(rf"({pattern})( браузер\w*)?|браузер\w* ({pattern})", n):
             return installed_browsers().get(k)

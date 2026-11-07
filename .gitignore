@@ -6,6 +6,7 @@ models/
 
 # журнал, отчёты диагностики, образцы голоса — личные данные
 capri.log
+capri.fault.log
 reports/
 samples/
 
@@ -13,6 +14,9 @@ samples/
 __pycache__/
 *.pyc
 *.tmp
+
+# кэш векторного RAG по коду (строится локально при старте)
+.capri_rag/
 
 # переопределение путей и уровня журнала (src/main/config.py)
 .env

@@ -11,9 +11,19 @@ class ILocalChatModelAdapter(IChatModelAdapter):
     def start_server(self) -> None: ...
 
     @abstractmethod
+    def stop_server(self) -> None:
+        """Выгрузить модель из памяти (освободить VRAM). Например, на время генерации картинки."""
+        ...
+
+    @abstractmethod
     def chatter(self) -> str | None:
         """Короткая спонтанная реплика или None."""
         ...
+
+    def instruct(self, system: str, user: str) -> str | None:
+        """Разовый ответ модели на инструкцию (без характера и истории). Напр. подбор тегов для картинки.
+        None — если модель недоступна или ответ пустой. По умолчанию не поддерживается."""
+        return None
 
     @abstractmethod
     def set_on_model_change(self, callback: Callable[[str], None]) -> None:

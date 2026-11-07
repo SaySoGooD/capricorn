@@ -310,7 +310,27 @@ class Speaker:
         async def go():  # фразы синтезируются параллельно — задержка как у одной
             await asyncio.gather(*(edge_tts.Communicate(s, self.voice, rate=r, pitch=self.pitch).save(f)
                                    for s, r, f in zip(sentences, rates, parts, strict=False)))
-        asyncio.run(go())
+        # Microsoft иногда не отдаёт поток («No audio received») — плавающий сбой, повтор обычно помогает.
+        # Но если нас уже перебили («стоп»), не ждём и не ретраим — молча выходим, чтобы стоп был мгновенным.
+        last_err = None
+        for attempt in range(2):
+            if self.stop_event.is_set():
+                return None
+            try:
+                asyncio.run(go())
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if self.stop_event.is_set():
+                    return None
+                if attempt < 1:
+                    log.info("edge-tts: пустой ответ, повтор")
+                    time.sleep(0.5)
+        if last_err is not None:
+            raise last_err
+        if self.stop_event.is_set():
+            return None
         try:
             import numpy as np
             gap = np.zeros(int(FX_SR * 0.13), np.float32)
@@ -343,6 +363,8 @@ class Speaker:
             os.utime(path)  # свежие держим, старые потом удаляем
             return path
         out = self.render(text, self.fx_path)
+        if out is None:  # синтез прервали («стоп») — ничего не кэшируем и не играем
+            return None
         if out.endswith(".wav") and len(text) <= CACHE_MAX_TEXT:  # длинные ответы нейросети не повторяются
             try:
                 os.makedirs(TTS_CACHE, exist_ok=True)
@@ -368,8 +390,8 @@ class Speaker:
 
     def _edge(self, text):
         path = self.cached_render(text)
-        if self.stop_event.is_set():
-            return True
+        if path is None or self.stop_event.is_set():
+            return True  # перебили во время синтеза — ничего не играем, на SAPI не сваливаемся
         return play_mp3(path, self.stop_event, self.volume)
 
     def _sapi(self, text):

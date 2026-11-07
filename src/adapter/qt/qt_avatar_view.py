@@ -16,6 +16,10 @@ class _Signals(QObject):
     roam = Signal()
     hop = Signal()
     move_to = Signal(str)
+    boot_start = Signal()
+    boot_text = Signal(str)
+    boot_end = Signal()
+    launch_flash = Signal()
 
 
 class QtAvatarView(IAvatarView):
@@ -31,6 +35,22 @@ class QtAvatarView(IAvatarView):
         s.roam.connect(avatar.start_roam)
         s.hop.connect(avatar.start_hopping)
         s.move_to.connect(avatar.move_to_named)
+        s.boot_start.connect(avatar.start_boot)
+        s.boot_text.connect(avatar.set_boot_text)
+        s.boot_end.connect(avatar.end_boot)
+        s.launch_flash.connect(avatar.launch_flash)
+
+    def launch_effect(self) -> None:
+        self._signals.launch_flash.emit()
+
+    def start_boot(self) -> None:
+        self._signals.boot_start.emit()
+
+    def set_boot(self, text: str) -> None:
+        self._signals.boot_text.emit(text)
+
+    def end_boot(self) -> None:
+        self._signals.boot_end.emit()
 
     def summon(self) -> None:
         self._signals.summon.emit()
